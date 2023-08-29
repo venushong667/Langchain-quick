@@ -1,0 +1,9 @@
+sentence_transformers
+langchain[all]
+transformers
+accelerate
+bitsandbytes
+faiss-gpu
+einops
+google-search-results
+python-dotenv

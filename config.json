@@ -1,0 +1,6 @@
+{
+    "main_model_id": "meta-llama/Llama-2-7b-chat-hf",
+    "embedding_model_id": "sentence-transformers/all-mpnet-base-v2",
+    "vector_store": "FAISS",
+    "chain_type": "zero-shot-react-agent"
+}
