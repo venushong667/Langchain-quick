@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 from transformers import HfArgumentParser
 from components import create_documents, init_chain, init_components, init_pipeline, init_vector_store
 
+from langchain.agents.react.base import DocstoreExplorer
+from langchain import Wikipedia
+
 from utils import read_json, build_llama2_prompt
 
 load_dotenv()
@@ -22,7 +25,10 @@ class ConfigArguments:
         default="sentence-transformers/all-mpnet-base-v2", metadata={"help": "Embedding model to embed documents into vector store."}
     )
     vector_store: str = field(
-        default="FAISS", metadata={"help": "Vector storage type."}
+        default=None, metadata={"help": "Vector storage type."}
+    )
+    doc_store: str = field(
+        default=None, metadata={"help": "Doc storage type."}
     )
     chain_type: str = field(
         default="conversation-retrieval", metadata={"help": "LLM pipeline chain type."}
@@ -45,8 +51,8 @@ def inference(chain):
         # chat_history.append((query, answer))
         # print(result)
         input_key = getattr(chain, "input_key", chain.input_keys[0])
-        
-        result = chain({input_key: query})
+        print("inputs: ", chain.input_keys)
+        result = chain({"input": query})
 
         print("--------------------------------------------")
         print("Response: ", result)
@@ -104,14 +110,14 @@ def main():
     model.eval()
 
     llm = init_pipeline(model, tokenizer)
-
-    retrieval = config_args.chain_type.split("-")[-1] == "retrieval"
-    vector_store = None
-    if retrieval:
-        documents, docs_splits = create_documents()
-        vector_store = init_vector_store(config_args.vector_store, config_args.embedding_model_id, docs_splits)
     
-    chain = init_chain(config_args.chain_type, llm, vector_store)
+    chain = init_chain(
+        config_args.chain_type,
+        llm,
+        config_args.vector_store,
+        config_args.embedding_model_id,
+        config_args.doc_store
+    )
     
     inference(chain)
     # inference_model(model, tokenizer)

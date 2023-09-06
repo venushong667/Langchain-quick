@@ -1,17 +1,42 @@
+from typing import Union
 import torch
 from torch import bfloat16
 
 import transformers
 from transformers import StoppingCriteria, StoppingCriteriaList
 
+from langchain import Wikipedia
 from langchain.llms import HuggingFacePipeline
 from langchain.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain, ConversationChain
-from langchain.agents import load_tools, initialize_agent, AgentType
+from langchain.agents import load_tools, initialize_agent, AgentType, Tool
+from langchain.agents.agent import AgentExecutor, Agent
+from langchain.agents.react.base import DocstoreExplorer
+from langchain.memory import ConversationBufferMemory
+from langchain.utilities import SerpAPIWrapper
 
+from agents import ReActDocstoreAgent
+
+
+PREFIX = """Answer the following questions as best you can. You have access to the following tools:"""
+FORMAT_INSTRUCTIONS = """Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times until you think the question is fully answered)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question"""
+SUFFIX = """Begin!
+
+Previous chat history: {chat_history}
+Question: {input}
+Thought:{agent_scratchpad}"""
 
 def init_components(model_id, cache_dir=None, hf_auth=None):
     # set quantization configuration to load large model with less GPU memory
@@ -67,7 +92,7 @@ def init_pipeline(model, tokenizer):
         return_full_text=True,  # langchain expects the full text
         task='text-generation',
         # we pass model parameters here too
-        stopping_criteria=stopping_criteria,  # without this model rambles during chat
+        # stopping_criteria=stopping_criteria,  # without this model rambles during chat
         temperature=0.1,  # 'randomness' of outputs, 0.0 is the min and 1.0 the max
         max_new_tokens=512,  # max number of tokens to generate in the output
         repetition_penalty=1.1  # without this output begins repeating
@@ -117,18 +142,54 @@ def init_vector_store(vector_store_type, embed_model_id, docs_splits):
 
     return store
 
-def init_chain(chain_type, llm, vector_store=None):
+def init_doc_store(doc_type="wikipedia"):
+    doc_store_dict = {
+        "wikipedia": Wikipedia
+    }
+
+    doc_class = doc_store_dict.get(doc_type)
+    if not doc_class:
+        raise ValueError(f"Doc store '{doc_type}' not supported.")
+    
+    doc_store = DocstoreExplorer(doc_class())
+
+    tools = [
+        Tool(
+            name="Search",
+            func=doc_store.search,
+            description="useful for when you need to ask with search",
+        ),
+        Tool(
+            name="Lookup",
+            func=doc_store.lookup,
+            description="useful for when you need to ask with lookup",
+        ),
+    ]
+    return doc_store, tools
+
+def init_chain(chain_type, llm, vector_store_type=None, embedding_model_id=None,doc_store_type=None):
+    tools = load_tools(["serpapi", "llm-math"], llm=llm)
     chain_dict = {
         "conversation-retrieval": ConversationalRetrievalChain,
         "conversation": ConversationChain,
-        "zero-shot-react-agent": AgentType.ZERO_SHOT_REACT_DESCRIPTION
+        "zero-shot-react-agent": AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        "conversation-react-agent": AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
+        "react-docstore": ReActDocstoreAgent
     }
     chain_class = chain_dict.get(chain_type)
     if not chain_class:
         raise ValueError("Chain Type not supported.")
+    print("Initialized chain type: ", chain_class)
+    
+    if vector_store_type:
+        documents, docs_splits = create_documents()
+        vector_store = init_vector_store(vector_store, embedding_model_id, docs_splits)
+    
+    if doc_store_type:
+        doc_stor, tools = init_doc_store(doc_store_type)
 
-    if chain_class in [t for t in AgentType]:
-        chain = init_agent(chain_class, llm, tools=["llm-math"])
+    if chain_class in [t for t in AgentType] + [ReActDocstoreAgent]:
+        chain = init_agent(chain_class, llm, tools=tools)
     else:
         if vector_store:
             chain = chain_class.from_llm(
@@ -152,13 +213,23 @@ def init_chain(chain_type, llm, vector_store=None):
 
     return chain
 
-def init_agent(agent_type: AgentType, llm, tools=["serpapi", "llm-math"], verbose=True):
-    tools = load_tools(tools, llm=llm)
-    agent = initialize_agent(tools,
-                             llm,
-                             agent=agent_type,
-                             verbose=verbose,
-                             agent_kwargs={}
-                        )
+def init_agent(agent_type: Union[AgentType, Agent], llm, tools=["serpapi", "llm-math"], verbose=True):
+    # memory = ConversationBufferMemory(memory_key="chat_history")
+    # agent_kwargs={"prefix": PREFIX, "suffix": SUFFIX, "format_instructions": FORMAT_INSTRUCTIONS},
+    # memory=memory,
+    if Agent in agent_type.__mro__:
+        agent_obj = agent_type.from_llm_and_tools(
+            llm, tools
+        )
+        agent = AgentExecutor.from_agent_and_tools(
+            agent=agent_obj, tools=tools, verbose=True
+        )
+    else:
+        agent = initialize_agent(
+            tools,
+            llm,
+            agent=agent_type,
+            verbose=verbose
+        )
     
     return agent
