@@ -7,3 +7,4 @@ faiss-gpu
 einops
 google-search-results
 python-dotenv
+trl
